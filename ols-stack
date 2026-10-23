@@ -1,0 +1,114 @@
+#!/usr/bin/env bash
+# ols-stack - CLI manajemen stack OpenLiteSpeed+WordPress (Debian 13 trixie). GPL-3.0
+# Diinstal ke /usr/local/bin/ols-stack ; lib di /usr/local/share/ols-stack/lib
+
+set -euo pipefail
+
+OLS_STACK_HOME="${OLS_STACK_HOME:-/usr/local/share/ols-stack}"
+SELF="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+# Bila dijalankan dari repo (satu file di samping folder lib/) atau dari /usr/local/bin
+if [[ -d "$(dirname "$SELF")/lib" ]]; then
+    SCRIPT_DIR="$(dirname "$SELF")"
+else
+    SCRIPT_DIR="$OLS_STACK_HOME"
+fi
+[[ -d "${SCRIPT_DIR}/lib" ]] || { echo "FATAL: direktori lib tidak ditemukan (${SCRIPT_DIR}/lib)" >&2; exit 1; }
+
+# shellcheck disable=SC1091
+source "${SCRIPT_DIR}/lib/common.sh"
+for m in install domain realip tune backup restore; do
+    # shellcheck disable=SC1090
+    source "${SCRIPT_DIR}/lib/${m}.sh"
+done
+if [[ -f ${STACK_DIR}/stack.conf ]]; then
+    # shellcheck disable=SC1091
+    . "${STACK_DIR}/stack.conf"
+fi
+LS_PHP_VER="${LS_PHP_VER:-85}"
+
+usage() {
+    cat <<'EOF'
+ols-stack — manajemen OpenLiteSpeed + WordPress Stack (Debian 13)
+
+Pemakaian: ols-stack <perintah> [argumen]
+
+Domain & WordPress:
+  add-domain <domain.tld> [--cert F --key F]   Buat vhost+jail+DB+SSL, install WP otomatis
+  remove-domain <domain.tld> [--yes]           Hapus total (destruktif, konfirmasi interaktif)
+  list-domains                                 Daftar domain terdaftar + status
+  optimize-wp [<domain>]                       Install/pastikan WP+LSCache utk 1/all domain
+
+Keamanan:
+  secure-admin                                 Kunci admin OLS ke 127.0.0.1:7080
+  update-cf-ips                                Refresh daftar IP Cloudflare (realIPList/mu-plugin)
+
+Performa:
+  tune [auto|1g|2g|4g]                         Terapkan profil tuning RAM
+  zram                                         Aktifkan swap zram (RAM kecil)
+
+Backup (Rclone streaming, tanpa arsip persisten lokal):
+  backup [--setup|<domain>|]                   Backup harian semua/1 domain (retensi 7 set lengkap)
+  list-backups <domain>                        Daftar backup dari remote
+  restore <domain> [nomor]                     Restore destruktif dgn konfirmasi 'YA'
+  rclone-test                                  Verifikasi tulis-baca-hapus remote
+  install-cron                                 Jadwalkan cron backup 00:03
+
+Status:
+  status                                       Cek service & kredensial path (tanpa nilai pass)
+EOF
+}
+
+cmd="${1:-usage}"; shift || true
+
+parse_domain_opts() {
+    DOM=""; CRT=""; KEY=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --cert) CRT="${2:?--cert butuh path}"; shift 2 ;;
+            --key)  KEY="${2:?--key butuh path}";  shift 2 ;;
+            *)      DOM="$1"; shift ;;
+        esac
+    done
+}
+
+case "$cmd" in
+    add-domain)
+        parse_domain_opts "$@"
+        [[ -n "$DOM" ]] || die "Parameter domain wajib diisi."
+        add_domain_main "$DOM"
+        install_wordpress "$DOM"
+        ;;
+    remove-domain)
+        dom=""; yesflag=""
+        for a in "$@"; do [[ "$a" == "--yes" ]] && yesflag="--yes" || dom="$a"; done
+        [[ -n "$dom" ]] || die "Parameter domain wajib diisi."
+        remove_domain_main "$dom" "$yesflag"
+        ;;
+    list-domains)     list_domains_main ;;
+    optimize-wp)      wordpress_optimize_main "${1:-}" ;;
+    secure-admin)     secure_admin_console ;;
+    update-cf-ips)    update_cloudflare_ips_main ;;
+    tune)             tune_apply_profile "${1:-auto}" ;;
+    zram)             tune_zram_enable ;;
+    backup)           backup_main "${1:-}" ;;
+    list-backups)     [[ -n "${1:-}" ]] || die "Pakai: ols-stack list-backups <domain>"
+                      declare -ga BACKUP_DIRS=(); list_backups_main "$1" ;;
+    restore)          [[ -n "${1:-}" ]] || die "Pakai: ols-stack restore <domain> [nomor]"
+                      restore_main "$1" "${2:-}" ;;
+    rclone-test)      rclone_test_main ;;
+    install-cron)     install_backup_cron ;;
+    status)
+        require_root
+        echo "== Service =="
+        for s in litespeed mariadb fail2ban ssh; do
+            printf "%-12s %s\n" "$s" "$(systemctl is-active "$s" 2>/dev/null || echo unknown)"
+        done
+        echo "== Admin OLS =="; grep -E '^Listener Address' "$OLS_ADMIN_CONF" 2>/dev/null || echo "(cek manual)"
+        echo "== UFW =="; ufw status verbose 2>/dev/null | head -8
+        echo "== Domain terdaftar =="; cat "$STACK_DOMAINS_FILE" 2>/dev/null || echo "(kosong)"
+        echo "== Kredensial (path saja, TIDAK menampilkan isi) =="
+        ls -l "$STACK_CRED_DIR" 2>/dev/null || true
+        ;;
+    usage|"")         usage ;;
+    *)                err "Perintah tidak dikenal: $cmd"; usage; exit 1 ;;
+esac
