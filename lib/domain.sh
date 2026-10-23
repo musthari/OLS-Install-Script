@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 # lib/domain.sh - manajemen domain: vhost OLS, jail SFTP+PHP, DB, SSL. GPL-3.0
 
-VHOST_ROOT="/usr/local/lsws/${DOMAIN_SLUG}"   # home root-owned untuk chroot
-WEB_DIR() { echo "/srv/www/$1"; }             # /srv/www/<slug>/public_html (user-owned)
-
-vhost_conf_file() { echo "${OLS_VHOST_DIR}/${DOMAIN_SLUG}.conf"; }
+# Catatan: JANGAN merujuk variabel per-domain (DOMAIN_SLUG dkk) di sini.
+# File ini di-source saat skrip berjalan dengan `set -u`; setiap nilai
+# per-domain harus dihitung lewat fungsi dari argumen domain.
+VHOST_ROOT()  { echo "/usr/local/lsws/$1"; }  # home root-owned untuk chroot SFTP
+WEB_DIR()     { echo "/srv/www/$1"; }         # /srv/www/<slug>/public_html (user-owned)
+vhost_conf_file() { echo "${OLS_VHOST_DIR}/$(domain_to_slug "$1").conf"; }
 
 domain_user()  { echo "web_$(domain_to_slug "$1")"; }
 domain_db()    { echo "db_$(domain_to_slug "$1")"; }
